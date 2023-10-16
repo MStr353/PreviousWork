@@ -1,0 +1,191 @@
+from sklearn.metrics import mean_squared_error, r2_score
+from math import sqrt
+import numpy as np
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv3D, MaxPooling3D, Flatten, Dense, Dropout
+import pandas as pd
+from sklearn.model_selection import train_test_split, KFold
+from sklearn import *
+import os
+import numpy as np
+from PIL import Image
+
+# Directory definitions
+root_dirs = ['IR500', 'XR750']
+sub_dirs = ['500_1_2_255', '500_1_2_520', '500_6_8_255', '500_6_8_520', '500Water255', '500Water520', 
+            '750_1_2_255', '750_1_2_520', '750_6_8_255', '750_6_8_520', '750Water255', '750Water520']
+time_points = ['000', '005', '010', '015', '030', '045', '060', '075', '120', '180', '240', '300', '360', '420', '480', '540', '600', '660', '720']
+
+#Storing data
+dataset_dict = {}
+
+#Loop over the directories and time points
+for root_dir in root_dirs:
+    for sub_dir in sub_dirs:
+        for time in time_points:
+            # Construct the file path
+            filepath = os.path.join(root_dir, sub_dir, f'frame{time}min.tif')
+            if os.path.exists(filepath):
+                with Image.open(filepath) as img:
+                    #Resize the image
+                    img_resized = img.resize((img.size[0] // 10, img.size[1] // 10))
+                    #Conver image to a numpy array and normalize pixel values
+                    img_array = np.array(img_resized) / 255.0
+                    #Define the key for this image in the dictionary
+                    key = (root_dir, time)
+                    #If the key is not already in the dictionary, add it with an empty list as the value
+                    if key not in dataset_dict:
+                        dataset_dict[key] = []
+                    #Append the image data to the list for this key
+                    dataset_dict[key].append((img_array, filepath))
+
+
+# New list creation
+dataset_cnn2 = []
+
+#Directories and time points
+root_dirs_ordered = ['IR500', 'XR750']
+time_points_ordered = ['000', '005', '010', '015', '030', '045', '060', '075', 
+                       '120', '180', '240', '300', '360', '420', '480', '540', '600', '660', '720']
+
+#Loop over each root directory and time point in the specified order
+for root_dir in root_dirs_ordered:
+    for time_point in time_points_ordered:
+        # If this (root directory, time point) pair is in the dictionary, stack the images
+        if (root_dir, time_point) in dataset_dict:
+            #Get the list of image tuples for this root directory and time point
+            image_tuples = dataset_dict[(root_dir, time_point)]
+            #Extract just the image data for stacking
+            image_stack = np.stack([img for img, filepath in image_tuples])
+            #Add the stacked images to the new dataset
+            dataset_cnn2.append(image_stack)
+
+#dataset_cnn is now a list of 3D numpy arrays, each representing a stack of images (different wavelengths) for a particular time point for a particular tablet
+
+#Load the CSV file
+data = pd.read_csv('FinalDataFile.csv')
+
+#Get the labels
+labels = data['InVivo'].values.reshape(-1,1)
+
+scalerY=preprocessing.MinMaxScaler(feature_range=(0, 1))
+scalerY.fit(labels)
+Y_scaled=pd.DataFrame(scalerY.transform(labels.reshape(-1,1))) 
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input
+from tensorflow.keras.layers import Conv3D
+from tensorflow.keras.layers import MaxPooling3D
+from tensorflow.keras.utils import plot_model
+from tensorflow.keras.layers import Flatten, Dense, Dropout
+from tensorflow.keras import backend as K
+import tensorflow
+import gc
+
+#Dataset and targets definition
+
+dataset = dataset_cnn2
+X_shape = dataset[0].shape
+Y = Y_scaled
+#Get the shape of the images
+input_shape = dataset_cnn2[0].shape
+
+# function for creating a vgg block
+def vgg_block(layer_in, n_filters, n_conv):
+	# add convolutional layers
+	for _ in range(n_conv):
+		layer_in = Conv3D(n_filters, (3,3,3), padding='same', activation='relu')(layer_in)
+	# add max pooling layer
+	layer_in = MaxPooling3D((2,2,2), strides=(2,2,2), padding='same')(layer_in)
+	return layer_in
+
+def final_module(layer_in):
+    Flat = Flatten()(layer_in)
+    
+    Drop = Dropout(0.3)(Flat)
+    
+    Dense1 = Dense(4096, activation='relu')(Drop)
+    
+    Dense2 = Dense(4096, activation='relu')(Dense1)
+    
+    layer_out = Dense(1, activation='linear')(Dense2)
+    return layer_out
+
+def create_model():
+    # define model input
+    visible = Input(shape=X_shape)
+    # add vgg module
+    layer = vgg_block(visible, 64, 2)
+    # add vgg module
+    layer = vgg_block(layer, 128, 2)
+    # add vgg module
+    layer = vgg_block(layer, 256, 3)
+    # add final module
+    layer = final_module(layer)
+# create model
+
+#@tensorflow.function(experimental_relax_shapes=True)
+#def create_model():
+    model = Model(inputs=visible, outputs=layer)
+    # summarize model
+    #model.summary()
+    # plot model architecture (Delete hash below to plot model)
+    #plot_model(model, show_shapes=True, to_file='multiple_vgg_blocks.png')
+
+    #Model Compiling
+    model.compile(loss='mse', optimizer='adam', metrics='mse')
+    return model
+
+# Define the number of folds for the cross-validation
+learning_time=[550,600,650,700,750,800,850, 900, 950, 1000]
+n_folds = 10
+kfold = KFold(n_folds, shuffle=True, random_state=1)
+
+
+for i in learning_time:
+    # Initialize lists to store predictions and true values
+    all_predictions = []
+    all_true_values = []
+
+    #Iterate over each fold
+    for train, test in kfold.split(dataset):
+        # Split the data into training and test sets for this fold
+        X_train, X_test = np.array(dataset)[train], np.array(dataset)[test]
+        y_train, y_test = np.array(Y)[train], np.array(Y)[test]
+
+        #Create a new model for this fold
+        model = create_model()
+
+        #Train the model
+        model.fit(X_train, y_train, epochs=i, verbose=True)
+
+        #Make predictions
+        predictions = model(X_test)
+        
+        del model
+
+        #Append the predictions and the true values to the lists
+        all_predictions.append(predictions)
+        all_true_values.append(y_test)
+        K.clear_session()
+        gc.collect()
+
+    #Convert the lists to numpy arrays
+    all_predictions = np.concatenate(all_predictions)
+    all_true_values = np.concatenate(all_true_values)
+
+    #Unscale the predictions and the true values
+    all_predictions_unscaled = scalerY.inverse_transform(all_predictions)
+    all_true_values_unscaled = scalerY.inverse_transform(all_true_values)
+
+    #Calculate RMSE and R^2
+    rmse = sqrt(mean_squared_error(all_true_values_unscaled, all_predictions_unscaled))
+    r2 = r2_score(all_true_values_unscaled, all_predictions_unscaled)
+
+    with open(f'Results_VGG_{i}iterations.txt', 'w') as f:
+        f.write(f'RMSE: {rmse}\n')
+        f.write(f'R^2: {r2}\n')
+        f.write('Predictions:\n')
+        f.write(np.array2string(all_predictions_unscaled))
+        f.write('\nTrue values:\n')
+        f.write(np.array2string(all_true_values_unscaled))
