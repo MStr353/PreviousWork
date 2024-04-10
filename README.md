@@ -5,3 +5,5 @@ The MP4 file is a video of the dissolution process of one of the tablets used in
 containing R/G/B values of particular pixels, and finally fed into different CNN architectures, including a VGGNet-inspired architecture as well as a GoogleNet-inspired architecture (Python scripts provided for these two in the repository).
 
 The models were developed with the intention to use the image data to predict In Vivo blood concentration of a specific drug, after oral administration.
+
+This code is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
